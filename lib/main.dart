@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart'; // 로케일 초기화용
 import 'package:provider/provider.dart';
-import 'package:permission_handler/permission_handler.dart'; // 권한 요청용
 import 'providers/weather_provider.dart'; // WeatherProvider 가져오기
 import 'screens/home_screen.dart';
 import 'screens/weather_screen.dart';
@@ -14,31 +13,7 @@ import 'screens/settings_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('ko_KR', null); // 한국어 로케일 초기화
-
-  // 위치 권한 요청
-  bool hasPermission = await requestLocationPermission();
-  if (!hasPermission) {
-    print("위치 권한이 없습니다. 앱이 올바르게 작동하지 않을 수 있습니다.");
-  }
-
   runApp(const MyApp());
-}
-
-// 위치 권한 요청 함수
-Future<bool> requestLocationPermission() async {
-  var status = await Permission.location.request();
-  if (status.isGranted) {
-    print("위치 권한이 허용되었습니다.");
-    return true;
-  } else if (status.isDenied) {
-    print("위치 권한이 거부되었습니다.");
-    return false;
-  } else if (status.isPermanentlyDenied) {
-    print("위치 권한이 영구적으로 거부되었습니다. 설정으로 이동합니다.");
-    await openAppSettings();
-    return false;
-  }
-  return false;
 }
 
 class MyApp extends StatelessWidget {

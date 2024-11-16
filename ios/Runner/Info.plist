@@ -45,12 +45,5 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<!-- 위치 권한 설명 추가 -->
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>앱 사용 중 위치 데이터를 사용하여 날씨 정보를 제공합니다.</string>
-	<key>NSLocationAlwaysUsageDescription</key>
-	<string>항상 위치 데이터를 사용하여 실시간 날씨 정보를 제공합니다.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>위치 데이터를 사용하여 맞춤형 날씨 서비스를 제공합니다.</string>
 </dict>
 </plist>

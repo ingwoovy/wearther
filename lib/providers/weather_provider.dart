@@ -65,26 +65,16 @@ class WeatherProvider extends ChangeNotifier {
 
   Future<void> _getCurrentLocation() async {
     try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        throw Exception("위치 서비스가 비활성화되었습니다.");
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          throw Exception("위치 권한이 거부되었습니다.");
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
-        throw Exception("위치 권한이 영구적으로 거부되었습니다.");
-      }
-
       Position position = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high);
-      print("위치 가져오기 성공: ${position.latitude}, ${position.longitude}");
+
+      await _getAddressFromCoordinates(position.latitude, position.longitude);
+      await fetchWeatherData(position.latitude, position.longitude);
+      await fetchTemperatureData(position.latitude, position.longitude);
+      await fetchAirQualityData();
+      await fetchWeeklyForecast(position.latitude, position.longitude);
+      await fetchHourlyForecast(
+          position.latitude, position.longitude); // 시간별 예보 추가
     } catch (e) {
       print("현재 위치를 가져오는 데 실패했습니다: $e");
     }
