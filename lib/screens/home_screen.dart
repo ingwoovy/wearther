@@ -24,10 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final weatherProvider = Provider.of<WeatherProvider>(context);
 
-    String formattedLocation = weatherProvider.location
-        .replaceFirst("대전광역시", "대전")
-        .replaceAll("서구", "")
-        .trim();
+    String formattedLocation = weatherProvider.location;
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -79,7 +76,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        "어제보다 ${weatherProvider.temperatureDiff}° 낮아요",
+                        weatherProvider.temperatureDiff.startsWith("기온 데이터를")
+                            ? "어제와 오늘의 기온 비교 데이터를 가져올 수 없습니다."
+                            : weatherProvider.temperatureDiff,
                         style: const TextStyle(
                           fontSize: 18,
                           color: Colors.white70,
@@ -140,8 +139,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             itemBuilder: (context, index) {
                               final forecast =
                                   weatherProvider.hourlyForecast[index];
-                              final hour =
-                                  int.parse(forecast["hour"]!.substring(0, 2));
+                              final hour = int.tryParse(
+                                      forecast["hour"]?.substring(0, 2) ??
+                                          "0") ??
+                                  0;
 
                               return Container(
                                 width: 60,

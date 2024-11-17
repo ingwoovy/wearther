@@ -7,7 +7,7 @@ import 'dart:math';
 import '../services/coordinate_converter.dart';
 
 class WeatherProvider extends ChangeNotifier {
-  String location = "대전 복수동";
+  String location = "-";
   String temperature = "-";
   String temperatureMin = "-";
   String temperatureMax = "-";
@@ -65,16 +65,38 @@ class WeatherProvider extends ChangeNotifier {
 
   Future<void> _getCurrentLocation() async {
     try {
-      Position position = await Geolocator.getCurrentPosition(
-          desiredAccuracy: LocationAccuracy.high);
+      // 위치 서비스 활성화 확인
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        throw Exception("위치 서비스가 비활성화되었습니다.");
+      }
 
+      // 권한 체크 및 요청
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          throw Exception("위치 권한이 거부되었습니다.");
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        throw Exception("위치 권한이 영구적으로 거부되었습니다.");
+      }
+
+      // 위치 정보 가져오기
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      // 위치 정보를 이용한 추가 작업
       await _getAddressFromCoordinates(position.latitude, position.longitude);
       await fetchWeatherData(position.latitude, position.longitude);
       await fetchTemperatureData(position.latitude, position.longitude);
       await fetchAirQualityData();
       await fetchWeeklyForecast(position.latitude, position.longitude);
-      await fetchHourlyForecast(
-          position.latitude, position.longitude); // 시간별 예보 추가
+      await fetchHourlyForecast(position.latitude, position.longitude);
+      await fetchTemperatureComparison(position.latitude, position.longitude);
     } catch (e) {
       print("현재 위치를 가져오는 데 실패했습니다: $e");
     }
@@ -91,22 +113,26 @@ class WeatherProvider extends ChangeNotifier {
       final data = json.decode(response.body);
       if (data['status'] == 'OK' && data['results'].isNotEmpty) {
         final addressComponents = data['results'][0]['address_components'];
-        String city = '';
-        String district = '';
-        String neighborhood = '';
+        String city = ''; // 시
+        String district = ''; // 구
+        String neighborhood = ''; // 동
 
         for (var component in addressComponents) {
           final types = component['types'];
           if (types.contains('administrative_area_level_1')) {
+            // 광역시/도
             city = component['long_name'];
-          } else if (types.contains('sublocality_level_1')) {
+          } else if (types.contains('administrative_area_level_2')) {
+            // 구
             district = component['long_name'];
-          } else if (types.contains('political') &&
+          } else if (types.contains('sublocality_level_1') ||
               types.contains('sublocality')) {
+            // 동
             neighborhood = component['long_name'];
           }
         }
 
+        // 최종 주소를 "대전광역시 서구 도안동" 형식으로 조합
         location = '$city $district $neighborhood';
         notifyListeners();
       } else {
@@ -121,46 +147,102 @@ class WeatherProvider extends ChangeNotifier {
       double latitude, double longitude) async {
     DateTime now = DateTime.now();
     DateTime yesterday = now.subtract(Duration(days: 1));
+
+    // 오늘과 어제 날짜
     String todayDate = DateFormat('yyyyMMdd').format(now);
     String yesterdayDate = DateFormat('yyyyMMdd').format(yesterday);
-    String baseTime = '1100'; // 오전 11시로 설정 예시
+
+    // 단기예보의 가장 최근 발표 시간 계산
+    String todayBaseTime = getNearestBaseTime(now);
+    String yesterdayBaseTime = getNearestBaseTime(yesterday);
 
     final coordinates = convertToGridCoordinates(latitude, longitude);
     final int nx = coordinates['nx']!;
     final int ny = coordinates['ny']!;
 
+    // 어제와 오늘의 데이터를 각각 가져옴
     String todayTemp =
-        await fetchTemperatureForDate(todayDate, baseTime, nx, ny);
+        await fetchTemperatureForDate(todayDate, todayBaseTime, nx, ny);
     String yesterdayTemp =
-        await fetchTemperatureForDate(yesterdayDate, baseTime, nx, ny);
+        await fetchTemperatureForDate(yesterdayDate, yesterdayBaseTime, nx, ny);
 
+    // 기온 차이 계산
     if (todayTemp != '-' && yesterdayTemp != '-') {
-      double tempDiff = double.parse(todayTemp) - double.parse(yesterdayTemp);
-      temperatureDiff = '${tempDiff.toStringAsFixed(1)}°';
+      double today = double.parse(todayTemp);
+      double yesterday = double.parse(yesterdayTemp);
+      double diff = today - yesterday;
+
+      temperatureDiff = diff > 0
+          ? '어제보다 ${diff.toStringAsFixed(1)}° 더 따뜻합니다.'
+          : '어제보다 ${diff.abs().toStringAsFixed(1)}° 더 춥습니다.';
     } else {
-      temperatureDiff = '데이터 없음';
+      temperatureDiff = '기온 데이터를 가져올 수 없습니다.';
     }
-    notifyListeners();
+    notifyListeners(); // 데이터 변경을 알림
+  }
+
+  String getNearestBaseTime(DateTime dateTime) {
+    // 단기예보 발표 시간: 0200, 0500, 0800, 1100, 1400, 1700, 2000, 2300
+    List<int> baseTimes = [2, 5, 8, 11, 14, 17, 20, 23];
+    int hour = dateTime.hour;
+
+    // 현재 시간보다 작거나 같은 가장 가까운 발표 시간을 선택
+    int nearestBaseTime = baseTimes.lastWhere((time) => hour >= time,
+        orElse: () => baseTimes.last);
+
+    // 시간 변환
+    if (hour < nearestBaseTime) {
+      // 발표 전이라면 하루 전날 기준으로 계산
+      dateTime = dateTime.subtract(Duration(days: 1));
+    }
+
+    return nearestBaseTime.toString().padLeft(2, '0') + '00';
   }
 
   Future<String> fetchTemperatureForDate(
       String date, String time, int nx, int ny) async {
     final response = await http.get(Uri.parse(
-      'http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?serviceKey=$weatherServiceKey&numOfRows=10&pageNo=1&dataType=JSON&base_date=$date&base_time=$time&nx=$nx&ny=$ny',
+      'http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst'
+      '?serviceKey=$weatherServiceKey'
+      '&numOfRows=100'
+      '&pageNo=1'
+      '&dataType=JSON'
+      '&base_date=$date'
+      '&base_time=$time'
+      '&nx=$nx'
+      '&ny=$ny',
     ));
+
     if (response.statusCode == 200) {
-      final data = json.decode(response.body);
-      final items = data['response']['body']['items']['item'];
-      for (var item in items) {
-        if (item['category'] == 'T1H') {
-          // T1H로 수정
-          return item['fcstValue'];
+      try {
+        final data = json.decode(response.body);
+        if (data['response'] != null &&
+            data['response']['header']['resultCode'] == "00" &&
+            data['response']['body']['items'] != null) {
+          final items = data['response']['body']['items']['item'];
+          var tempItem = items.firstWhere(
+            (item) => item['category'] == 'TMP',
+            orElse: () => null,
+          );
+
+          if (tempItem != null) {
+            return tempItem['fcstValue'];
+          } else {
+            print("TMP 데이터가 없습니다: $items");
+            return '-';
+          }
+        } else {
+          print("API 응답 데이터가 예상과 다릅니다: ${response.body}");
+          return '-';
         }
+      } catch (e) {
+        print("JSON 파싱 실패: $e");
+        return '-';
       }
     } else {
-      print("날짜 $date 의 데이터를 가져오는 데 실패했습니다: ${response.statusCode}");
+      print("HTTP 요청 실패: ${response.statusCode}, ${response.reasonPhrase}");
+      return '-';
     }
-    return '-';
   }
 
   Future<void> fetchHourlyForecast(double latitude, double longitude) async {
@@ -169,7 +251,6 @@ class WeatherProvider extends ChangeNotifier {
     final DateTime now = DateTime.now();
     DateTime baseTimeDate = now;
 
-    // 발표 시간대 결정
     final List<int> forecastTimes = [23, 20, 17, 14, 11, 8, 5, 2];
     int hour = forecastTimes.firstWhere((t) => now.hour >= t, orElse: () => 23);
     if (now.hour < hour)
@@ -183,8 +264,10 @@ class WeatherProvider extends ChangeNotifier {
     final int ny = coordinates['ny']!;
 
     final response = await http.get(Uri.parse(
-      "$apiUrl?serviceKey=$weatherServiceKey&numOfRows=200&pageNo=1&dataType=JSON&base_date=$baseDate&base_time=$baseTime&nx=$nx&ny=$ny",
+      "$apiUrl?serviceKey=$weatherServiceKey&numOfRows=300&pageNo=1&dataType=JSON&base_date=$baseDate&base_time=$baseTime&nx=$nx&ny=$ny",
     ));
+
+    Map<String, dynamic>? cachedPreviousData;
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
@@ -199,46 +282,35 @@ class WeatherProvider extends ChangeNotifier {
         String displayHour = DateFormat('HH시').format(forecastTime);
         String forecastDate = DateFormat('yyyyMMdd').format(forecastTime);
 
-        // 시간별 예보 데이터를 찾기
-        var tempItem = items.firstWhere(
-          (item) =>
-              item['fcstDate'] == forecastDate &&
-              item['fcstTime'] == formattedHour &&
-              item['category'] == 'TMP',
-          orElse: () => null,
-        );
+        var tempItem =
+            _findForecastItem(items, forecastDate, formattedHour, 'TMP');
+        var skyItem =
+            _findForecastItem(items, forecastDate, formattedHour, 'SKY');
+        var ptyItem =
+            _findForecastItem(items, forecastDate, formattedHour, 'PTY');
 
-        var skyItem = items.firstWhere(
-          (item) =>
-              item['fcstDate'] == forecastDate &&
-              item['fcstTime'] == formattedHour &&
-              item['category'] == 'SKY',
-          orElse: () => null,
-        );
+        // 이전 데이터 요청 및 사용
+        if (tempItem == null) {
+          if (cachedPreviousData == null) {
+            cachedPreviousData =
+                await _fetchPreviousData(baseDate, baseTime, nx, ny, apiUrl);
+          }
+          tempItem = _findForecastItem(
+              cachedPreviousData?['items'], forecastDate, formattedHour, 'TMP');
+        }
 
-        var ptyItem = items.firstWhere(
-          (item) =>
-              item['fcstDate'] == forecastDate &&
-              item['fcstTime'] == formattedHour &&
-              item['category'] == 'PTY',
-          orElse: () => null,
-        );
-
-        // 유효한 데이터가 있을 경우 저장
         if (tempItem != null || skyItem != null || ptyItem != null) {
           lastAvailableData = {
             "temperature": tempItem != null ? "${tempItem['fcstValue']}°" : "-",
             "skyValue": skyItem != null ? skyItem['fcstValue'] : "",
-            "ptyValue": ptyItem != null ? ptyItem['fcstValue'] : ""
+            "ptyValue": ptyItem != null ? ptyItem['fcstValue'] : "",
           };
         }
 
-        // 누락된 데이터의 경우 마지막으로 사용 가능한 데이터로 대체
         String temperature = lastAvailableData?["temperature"] ?? "-";
         String skyValue = lastAvailableData?["skyValue"] ?? "";
         String ptyValue = lastAvailableData?["ptyValue"] ?? "";
 
-        // 날씨 상태 설정
         String weatherState;
         if (ptyValue.isNotEmpty && ptyValue != "0") {
           weatherState = getWeatherDescription("PTY", ptyValue);
@@ -264,6 +336,56 @@ class WeatherProvider extends ChangeNotifier {
     }
   }
 
+  Future<Map<String, dynamic>?> _fetchPreviousData(
+      String baseDate, String baseTime, int nx, int ny, String apiUrl) async {
+    String previousBaseTime = calculatePreviousBaseTime(baseTime);
+    String previousBaseDate = calculatePreviousBaseDate(baseDate, baseTime);
+
+    final previousResponse = await http.get(Uri.parse(
+      "$apiUrl?serviceKey=$weatherServiceKey&numOfRows=300&pageNo=1&dataType=JSON&base_date=$previousBaseDate&base_time=$previousBaseTime&nx=$nx&ny=$ny",
+    ));
+
+    if (previousResponse.statusCode == 200) {
+      final previousData = json.decode(previousResponse.body);
+      return {
+        "items": previousData['response']['body']['items']['item'],
+      };
+    }
+    print("이전 데이터를 불러오는 데 실패했습니다: ${previousResponse.statusCode}");
+    return null;
+  }
+
+  dynamic _findForecastItem(
+      List<dynamic>? items, String date, String time, String category) {
+    if (items == null) return null;
+    return items.firstWhere(
+      (item) =>
+          item['fcstDate'] == date &&
+          item['fcstTime'] == time &&
+          item['category'] == category,
+      orElse: () => null,
+    );
+  }
+
+// 이전 baseTime 계산
+  String calculatePreviousBaseTime(String currentBaseTime) {
+    final baseTimes = [23, 20, 17, 14, 11, 8, 5, 2];
+    int currentHour = int.parse(currentBaseTime.substring(0, 2));
+    int previousHour = baseTimes.lastWhere((hour) => hour < currentHour,
+        orElse: () => baseTimes.last);
+    return previousHour.toString().padLeft(2, '0') + "00";
+  }
+
+// 이전 baseDate 계산
+  String calculatePreviousBaseDate(String baseDate, String baseTime) {
+    if (baseTime == "0200") {
+      DateTime date =
+          DateFormat("yyyyMMdd").parse(baseDate).subtract(Duration(days: 1));
+      return DateFormat("yyyyMMdd").format(date);
+    }
+    return baseDate;
+  }
+
   Future<void> fetchWeatherData(double latitude, double longitude) async {
     final String apiUrl =
         "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst";
@@ -272,6 +394,7 @@ class WeatherProvider extends ChangeNotifier {
     int hour = now.hour;
     String baseTime;
 
+    // 현재 시각 기준으로 가장 가까운 발표 시간 결정
     if (now.minute < 45) {
       hour = hour == 0 ? 23 : hour - 1;
       baseDate = hour == 23
@@ -290,34 +413,48 @@ class WeatherProvider extends ChangeNotifier {
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
-      final items = data['response']['body']['items']['item'];
+      final items = data['response']['body']['items']['item'] as List;
 
+      // 현재 시간에 가장 가까운 fcstTime 찾기
+      String nowTime = DateFormat('HHmm').format(now);
+      String closestFcstTime = items.map((item) => item['fcstTime']).reduce(
+          (a, b) => (int.parse(a).abs() - int.parse(nowTime).abs()).abs() <
+                  (int.parse(b).abs() - int.parse(nowTime).abs()).abs()
+              ? a
+              : b);
+
+      // 필터링: closestFcstTime과 일치하는 데이터만 가져오기
+      final filteredItems =
+          items.where((item) => item['fcstTime'] == closestFcstTime);
+
+      // 필요한 데이터를 추출
       String skyValue = "";
       String ptyValue = "";
 
-      for (var item in items) {
+      for (var item in filteredItems) {
         switch (item['category']) {
-          case 'T1H':
+          case 'T1H': // 기온
             temperature = "${item['fcstValue']}°";
             break;
-          case 'SKY':
+          case 'SKY': // 하늘 상태
             skyValue = item['fcstValue'];
             break;
-          case 'PTY':
+          case 'PTY': // 강수 형태
             ptyValue = item['fcstValue'];
             break;
-          case 'REH':
+          case 'REH': // 습도
             humidity = "${item['fcstValue']}%";
             break;
-          case 'WSD':
+          case 'WSD': // 풍속
             windSpeed = "${item['fcstValue']} m/s";
             break;
-          case 'VEC':
+          case 'VEC': // 풍향
             windDirection = double.parse(item['fcstValue']);
             break;
         }
       }
 
+      // 날씨 상태 결정
       if (ptyValue.isNotEmpty && ptyValue != "0") {
         weatherState = getWeatherDescription("PTY", ptyValue);
       } else if (skyValue.isNotEmpty) {
@@ -326,13 +463,15 @@ class WeatherProvider extends ChangeNotifier {
         weatherState = "맑음";
       }
 
+      // 체감 온도 계산
       feelsLikeTemperature = calculateFeelsLikeTemperature(
             double.parse(temperature.replaceAll('°', '')),
             double.parse(humidity.replaceAll('%', '')),
             double.parse(windSpeed.replaceAll(' m/s', '')),
           ).toStringAsFixed(1) +
-          "°C";
+          "°";
 
+      // 풍향 변환
       windDirectionText = convertWindDirectionToCompass(windDirection);
 
       notifyListeners();
